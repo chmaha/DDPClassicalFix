@@ -9,7 +9,7 @@ fn get_file_size(filepath: &str) -> std::io::Result<u64> {
     Ok(fs::metadata(filepath)?.len())
 }
 
-fn fix_cdtext_bin(cdtext_path: &str) -> std::io::Result<u64> {
+fn fix_cdtext_bin(cdtext_path: &str) -> std::io::Result<Option<u64>> {
     let mut file = File::open(cdtext_path)?;
     let mut data = Vec::new();
     file.read_to_end(&mut data)?;
@@ -30,7 +30,6 @@ fn fix_cdtext_bin(cdtext_path: &str) -> std::io::Result<u64> {
         let first_packet_pos = positions[0];
         let second_packet_pos = positions[1];
 
-        // Check if the first packet contains "Classical"
         let first_packet_end = first_packet_pos + 18;
         if first_packet_end <= data.len() {
             let first_packet_content = &data[first_packet_pos..first_packet_end];
@@ -43,13 +42,15 @@ fn fix_cdtext_bin(cdtext_path: &str) -> std::io::Result<u64> {
                 let mut file = File::create(cdtext_path)?;
                 file.write_all(&data)?;
                 println!("Packet successfully removed.");
+
+                return get_file_size(cdtext_path).map(Some);
             } else {
                 println!("First 0x87 packet does not contain 'Classical', skipping removal.");
             }
         }
     }
 
-    get_file_size(cdtext_path)
+    Ok(None) // No changes made
 }
 
 fn update_cdtext_size_in_descriptor(ddp_folder: &str, new_size: u64) -> std::io::Result<()> {
@@ -157,19 +158,23 @@ fn update_md5_checksum(ddp_folder: &str) -> std::io::Result<()> {
     Ok(())
 }
 
-fn process_ddp_folder(ddp_folder: &str) -> std::io::Result<()> {
+fn process_ddp_folder(ddp_folder: &str) -> std::io::Result<Option<()>> {
     let cdtext_path = format!("{}/CDTEXT.BIN", ddp_folder);
 
     if !Path::new(&cdtext_path).exists() {
         println!("CDTEXT.BIN not found! Skipping cleanup.");
-        return Ok(());
+        return Ok(None);
     }
 
-    let new_cdtext_size = fix_cdtext_bin(&cdtext_path)?;
+    let new_cdtext_size = match fix_cdtext_bin(&cdtext_path)? {
+        Some(size) => size,
+        None => return Ok(None), // No changes → Exit early
+    };
+
     update_cdtext_size_in_descriptor(ddp_folder, new_cdtext_size)?;
     update_md5_checksum(ddp_folder)?;
 
-    Ok(())
+    Ok(Some(()))
 }
 
 fn main() {
@@ -188,8 +193,19 @@ fn main() {
     }
 
     println!("Processing DDP folder: {}", ddp_folder);
-    if let Err(e) = process_ddp_folder(ddp_folder) {
-        eprintln!("Error: {}", e);
-        std::process::exit(1);
+    match process_ddp_folder(ddp_folder) {
+        Ok(Some(())) => {
+            println!("Changes were made.");
+        }
+        Ok(None) => {
+            println!("No changes were necessary. Exiting.");
+            std::process::exit(0); // Exit early
+        }
+        Err(e) => {
+            eprintln!("Error: {}", e);
+            std::process::exit(1);
+        }
     }
+
+    println!("Now checking checksums...");
 }
