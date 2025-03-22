@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "DDPClassicalFix"
-version = "1.0.1"
+version = "1.0.2"
 dependencies = [
  "md5",
  "regex",
