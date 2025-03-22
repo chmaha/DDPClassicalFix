@@ -9,6 +9,21 @@ fn get_file_size(filepath: &str) -> std::io::Result<u64> {
     Ok(fs::metadata(filepath)?.len())
 }
 
+fn calculate_crc(data: &[u8]) -> u16 {
+    let mut crc: u16 = 0;
+    for &byte in data {
+        crc ^= (byte as u16) << 8;
+        for _ in 0..8 {
+            if crc & 0x8000 != 0 {
+                crc = (crc << 1) ^ 0x1021; // Standard CRC-CCITT polynomial
+            } else {
+                crc <<= 1;
+            }
+        }
+    }
+    crc ^ 0xFFFF // Apply inversion step
+}
+
 fn fix_cdtext_bin(cdtext_path: &str) -> std::io::Result<Option<u64>> {
     let mut file = File::open(cdtext_path)?;
     let mut data = Vec::new();
@@ -32,16 +47,36 @@ fn fix_cdtext_bin(cdtext_path: &str) -> std::io::Result<Option<u64>> {
 
         let first_packet_end = first_packet_pos + 18;
         if first_packet_end <= data.len() {
-            let first_packet_content = &data[first_packet_pos..first_packet_end];
-            let first_packet_string = String::from_utf8_lossy(first_packet_content);
+            let target = b"Classical";
+            let packet_start = first_packet_pos;
+            let packet_end = first_packet_pos + 16; // Exclude CRC bytes
 
-            if first_packet_string.contains("Classical") {
+            // Look for "Classical" within the first 16 bytes
+            if let Some(pos) = data[packet_start..packet_end]
+                .windows(target.len())
+                .position(|window| window == target)
+            {
                 println!("First 0x87 packet contains 'Classical', removing second at position {}...", second_packet_pos);
+                
+                // Delete second 0x87 packet
                 data.drain(second_packet_pos..second_packet_pos + 18);
+
+                // Zero out "Classical"
+                println!("Zeroing out 'Classical' in first 0x87 packet...");
+                for j in 0..target.len() {
+                    data[packet_start + pos + j] = 0;
+                }
+
+                // Recalculate CRC for first 16 bytes
+                let new_crc = calculate_crc(&data[packet_start..packet_start + 16]);
+                data[packet_start + 16] = (new_crc >> 8) as u8;  // High byte
+                data[packet_start + 17] = (new_crc & 0xFF) as u8; // Low byte
+
+                println!("Updated CRC: {:04X}", new_crc);
 
                 let mut file = File::create(cdtext_path)?;
                 file.write_all(&data)?;
-                println!("Packet successfully removed.");
+                println!("Modifications applied successfully.");
 
                 return get_file_size(cdtext_path).map(Some);
             } else {
